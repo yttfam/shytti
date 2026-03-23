@@ -340,7 +340,11 @@ impl futures_util::Stream for WsStreamAdapter {
                     axum::extract::ws::Message::Text(t) => TungMessage::Text(t.to_string().into()),
                     axum::extract::ws::Message::Binary(b) => TungMessage::Binary(b.to_vec().into()),
                     axum::extract::ws::Message::Close(_) => TungMessage::Close(None),
-                    _ => return std::task::Poll::Ready(None),
+                    // Ping/Pong — skip, re-poll
+                    _ => {
+                        cx.waker().wake_by_ref();
+                        return std::task::Poll::Pending;
+                    }
                 };
                 std::task::Poll::Ready(Some(Ok(tung_msg)))
             }
