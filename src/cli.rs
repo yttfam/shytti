@@ -38,8 +38,14 @@ pub fn parse() -> Command {
             });
             Command::Kill { id }
         }
-        _ => {
-            eprintln!("usage: shytti <daemon|spawn|list|kill>");
+        // No subcommand or unknown → default to daemon
+        None => {
+            let config = flag(&args, "--config").or_else(|| flag(&args, "-c")).map(PathBuf::from);
+            Command::Daemon { config }
+        }
+        Some(other) => {
+            eprintln!("unknown command: {other}");
+            eprintln!("usage: shytti [daemon|spawn|list|kill]");
             std::process::exit(1);
         }
     }
