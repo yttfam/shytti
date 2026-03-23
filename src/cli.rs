@@ -43,14 +43,19 @@ pub fn parse() -> Command {
             });
             Command::Kill { id }
         }
-        // No subcommand or unknown → default to daemon
+        // No subcommand → daemon
         None => {
+            let config = flag(&args, "--config").or_else(|| flag(&args, "-c")).map(PathBuf::from);
+            Command::Daemon { config }
+        }
+        // First arg is a flag (not a subcommand) → daemon with flags
+        Some(other) if other.starts_with('-') => {
             let config = flag(&args, "--config").or_else(|| flag(&args, "-c")).map(PathBuf::from);
             Command::Daemon { config }
         }
         Some(other) => {
             eprintln!("unknown command: {other}");
-            eprintln!("usage: shytti [daemon|spawn|list|kill]");
+            eprintln!("usage: shytti [daemon|spawn|list|kill|pair]");
             std::process::exit(1);
         }
     }
