@@ -323,6 +323,32 @@ pub fn gen_long_lived_key() -> String {
     format!("sk-{t:x}{pid:x}{t:x}")
 }
 
+// --- Key persistence ---
+
+/// Path to store the long-lived key (next to config)
+pub fn key_path(listen_addr: &str) -> std::path::PathBuf {
+    let _ = listen_addr; // could use for naming, but keep simple
+    std::path::PathBuf::from("/opt/shytti/.shytti-key")
+}
+
+pub fn save_key(path: &std::path::Path, key: &str) {
+    if let Err(e) = std::fs::write(path, key) {
+        tracing::error!("failed to save pairing key: {e}");
+    } else {
+        // Restrict permissions
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
+        tracing::info!(path = %path.display(), "saved pairing key");
+    }
+}
+
+pub fn load_key(path: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(path).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
 // Minimal base64 — no dep needed
 fn base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

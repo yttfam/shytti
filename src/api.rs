@@ -33,6 +33,8 @@ pub struct AppState {
     pub pair_state: Mutex<Option<PairState>>,
     /// Long-lived key for Mode 2 reconnect
     pub long_lived_key: Mutex<Option<String>>,
+    /// Path to persist the key
+    pub key_path: Mutex<Option<std::path::PathBuf>>,
 }
 
 pub fn router(cfg: &Config, manager: ShellManager, bridge: Arc<HermyttBridge>) -> Router {
@@ -54,6 +56,7 @@ pub fn router_with_state(cfg: &Config, manager: ShellManager, bridge: Arc<Hermyt
         sessions: Mutex::new(HashMap::new()),
         pair_state: Mutex::new(None),
         long_lived_key: Mutex::new(None),
+        key_path: Mutex::new(None),
     });
 
     let app = Router::new()
@@ -218,9 +221,12 @@ async fn handle_pair(socket: WebSocket, state: Arc<AppState>) {
         }
     }
 
-    // Generate long-lived key and send it back
+    // Generate long-lived key, persist it, and send it back
     let llk = gen_long_lived_key();
     *state.long_lived_key.lock().await = Some(llk.clone());
+    if let Some(path) = state.key_path.lock().await.as_ref() {
+        control::save_key(path, &llk);
+    }
 
     let resp = serde_json::json!({
         "status": "paired",
