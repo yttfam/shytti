@@ -13,6 +13,21 @@ pub struct Config {
     pub defaults: DefaultsConfig,
     #[serde(default)]
     pub shells: Vec<ShellConfig>,
+    /// Hermytt bootstrap writes [hermytt] with url/token. We merge it into daemon config.
+    #[serde(default)]
+    pub hermytt: Option<HermyttSection>,
+}
+
+impl Config {
+    pub fn new(daemon: DaemonConfig, defaults: DefaultsConfig, shells: Vec<ShellConfig>) -> Self {
+        Self { daemon, defaults, shells, hermytt: None }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HermyttSection {
+    url: Option<String>,
+    token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,7 +86,16 @@ impl Config {
 
         if path.exists() {
             let content = std::fs::read_to_string(&path)?;
-            let config: Config = toml::from_str(&content)?;
+            let mut config: Config = toml::from_str(&content)?;
+            // Merge [hermytt] section into daemon config (bootstrap compat)
+            if let Some(h) = config.hermytt.take() {
+                if let Some(url) = h.url {
+                    config.daemon.hermytt_url = url;
+                }
+                if let Some(token) = h.token {
+                    config.daemon.hermytt_key = token;
+                }
+            }
             tracing::info!(path = %path.display(), "loaded config");
             Ok(config)
         } else {
@@ -80,6 +104,7 @@ impl Config {
                 daemon: DaemonConfig::default(),
                 defaults: DefaultsConfig::default(),
                 shells: vec![],
+                hermytt: None,
             })
         }
     }
@@ -210,6 +235,38 @@ autostart = false
         assert_eq!(req.host, Some("user@host".into()));
         assert_eq!(req.agent, Some("infra".into()));
         assert_eq!(req.cmd, Some("ls -la".into()));
+    }
+
+    #[test]
+    fn hermytt_section_overrides_daemon() {
+        let p = write_tmp("hermytt_compat", r#"
+[hermytt]
+url = "http://10.10.0.3:7777"
+token = "d83c76d70e0847cf9bc6db0720e8faed"
+"#);
+        let cfg = Config::load(Some(p.clone())).unwrap();
+        std::fs::remove_file(&p).ok();
+
+        assert_eq!(cfg.daemon.hermytt_url, "http://10.10.0.3:7777");
+        assert_eq!(cfg.daemon.hermytt_key, "d83c76d70e0847cf9bc6db0720e8faed");
+    }
+
+    #[test]
+    fn hermytt_section_with_daemon_section() {
+        let p = write_tmp("both_sections", r#"
+[daemon]
+listen = "0.0.0.0:7778"
+
+[hermytt]
+url = "http://10.10.0.3:7777"
+token = "mytoken"
+"#);
+        let cfg = Config::load(Some(p.clone())).unwrap();
+        std::fs::remove_file(&p).ok();
+
+        assert_eq!(cfg.daemon.listen, "0.0.0.0:7778");
+        assert_eq!(cfg.daemon.hermytt_url, "http://10.10.0.3:7777");
+        assert_eq!(cfg.daemon.hermytt_key, "mytoken");
     }
 
     #[test]

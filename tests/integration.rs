@@ -8,16 +8,16 @@ use tokio::net::TcpStream;
 
 fn test_config() -> Config {
     // Empty hermytt_key means auth is skipped in tests
-    Config {
-        daemon: shytti::config::DaemonConfig {
+    Config::new(
+        shytti::config::DaemonConfig {
             listen: "127.0.0.1:0".into(),
             hermytt_url: "http://127.0.0.1:1".into(),
             hermytt_key: String::new(),
             max_shells: Some(64),
         },
-        defaults: shytti::config::DefaultsConfig::default(),
-        shells: vec![],
-    }
+        shytti::config::DefaultsConfig::default(),
+        vec![],
+    )
 }
 
 async fn start_server() -> (String, ShellManager) {

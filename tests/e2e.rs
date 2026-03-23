@@ -9,16 +9,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 fn test_config() -> Config {
-    Config {
-        daemon: DaemonConfig {
+    Config::new(
+        DaemonConfig {
             listen: "127.0.0.1:0".into(),
             hermytt_url: "http://127.0.0.1:1".into(),
             hermytt_key: String::new(),
             max_shells: Some(64),
         },
-        defaults: DefaultsConfig::default(),
-        shells: vec![],
-    }
+        DefaultsConfig::default(),
+        vec![],
+    )
 }
 
 async fn start_daemon() -> String {

@@ -9,16 +9,15 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 fn config_with_auth(key: &str, max_shells: usize) -> Config {
-    Config {
-        daemon: DaemonConfig {
+    Config::new(
+        DaemonConfig {
             listen: "127.0.0.1:0".into(),
             hermytt_url: "http://127.0.0.1:1".into(),
             hermytt_key: key.into(),
             max_shells: Some(max_shells),
         },
-        defaults: DefaultsConfig::default(),
-        shells: vec![
-            // Only allow SSH to this host
+        DefaultsConfig::default(),
+        vec![
             ShellConfig {
                 name: "allowed-host".into(),
                 host: Some("cali@10.10.0.7".into()),
@@ -26,20 +25,20 @@ fn config_with_auth(key: &str, max_shells: usize) -> Config {
                 project: None, cmd: None, autostart: false,
             },
         ],
-    }
+    )
 }
 
 fn config_no_auth() -> Config {
-    Config {
-        daemon: DaemonConfig {
+    Config::new(
+        DaemonConfig {
             listen: "127.0.0.1:0".into(),
             hermytt_url: "http://127.0.0.1:1".into(),
             hermytt_key: String::new(),
             max_shells: Some(3),
         },
-        defaults: DefaultsConfig::default(),
-        shells: vec![],
-    }
+        DefaultsConfig::default(),
+        vec![],
+    )
 }
 
 async fn start_with_config(cfg: Config) -> String {
