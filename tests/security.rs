@@ -252,3 +252,92 @@ async fn handles_binary_garbage() {
     let (status, _) = http_req(&addr, "POST", "/shells", Some("\x00\x01\x02\x7f"), &[]).await;
     assert!(status >= 400);
 }
+
+// --- Pairing / control WS auth tests ---
+
+async fn start_with_state(cfg: Config) -> (String, std::sync::Arc<shytti::api::AppState>) {
+    let manager = ShellManager::new();
+    let (app, state) = api::router_with_state(&cfg, manager);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (addr, state)
+}
+
+#[tokio::test]
+async fn pair_rejects_invalid_pair_key() {
+    use tokio_tungstenite::tungstenite::Message;
+    use futures_util::{SinkExt, StreamExt};
+
+    let (addr, state) = start_with_state(config_no_auth()).await;
+    // Set a known pair state
+    *state.pair_state.lock().await = Some(shytti::control::PairState {
+        pair_key: "correct-key".into(),
+        long_lived_key: None,
+        used: false,
+    });
+
+    let url = format!("ws://{addr}/pair");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(Message::Text(r#"{"pair_key":"wrong-key"}"#.into())).await.unwrap();
+    let resp = ws.next().await.unwrap().unwrap();
+    let text = resp.into_text().unwrap();
+    assert!(text.contains("invalid"), "expected rejection, got: {text}");
+}
+
+#[tokio::test]
+async fn pair_rejects_reused_pair_key() {
+    use tokio_tungstenite::tungstenite::Message;
+    use futures_util::{SinkExt, StreamExt};
+
+    let (addr, state) = start_with_state(config_no_auth()).await;
+    *state.pair_state.lock().await = Some(shytti::control::PairState {
+        pair_key: "one-time-key".into(),
+        long_lived_key: None,
+        used: true, // already burned
+    });
+
+    let url = format!("ws://{addr}/pair");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(Message::Text(r#"{"pair_key":"one-time-key"}"#.into())).await.unwrap();
+    let resp = ws.next().await.unwrap().unwrap();
+    let text = resp.into_text().unwrap();
+    assert!(text.contains("invalid") || text.contains("expired"), "expected rejection for reused key, got: {text}");
+}
+
+#[tokio::test]
+async fn control_rejects_invalid_long_lived_key() {
+    use tokio_tungstenite::tungstenite::Message;
+    use futures_util::{SinkExt, StreamExt};
+
+    let (addr, state) = start_with_state(config_no_auth()).await;
+    *state.long_lived_key.lock().await = Some("real-secret-key".into());
+
+    let url = format!("ws://{addr}/control");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(Message::Text(r#"{"auth":"wrong-key"}"#.into())).await.unwrap();
+    let resp = ws.next().await.unwrap().unwrap();
+    let text = resp.into_text().unwrap();
+    assert!(text.contains("unauthorized"), "expected unauthorized, got: {text}");
+}
+
+#[tokio::test]
+async fn auth_middleware_bypasses_pair_and_control_paths() {
+    // With auth enabled, /pair and /control should still be reachable (they do their own auth)
+    let addr = start_with_config(config_with_auth("secret123", 64)).await;
+
+    // /shells without key should be 401
+    let (status, _) = http_req(&addr, "GET", "/shells", None, &[]).await;
+    assert_eq!(status, 401);
+
+    // /pair should NOT be 401 — it upgrades to WS, so we get 400 or similar (not 401)
+    // Just verify it doesn't reject with 401
+    let (status, _) = http_req(&addr, "GET", "/pair", None, &[]).await;
+    assert_ne!(status, 401, "/pair should bypass auth middleware");
+
+    // /control should NOT be 401 either
+    let (status, _) = http_req(&addr, "GET", "/control", None, &[]).await;
+    assert_ne!(status, 401, "/control should bypass auth middleware");
+}

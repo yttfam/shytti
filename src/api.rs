@@ -221,7 +221,7 @@ async fn handle_pair(socket: WebSocket, state: Arc<AppState>) {
     let sink = Arc::new(tokio::sync::Mutex::new(WsSinkAdapter(sink)));
     let stream = WsStreamAdapter(stream);
     let hostname = crate::control::gethostname();
-    control::run_control(sink, stream, &state.manager, &hostname).await;
+    control::run_control(sink, stream, &state.manager, &hostname, state.max_shells, &state.allowed_hosts).await;
 }
 
 // --- Mode 2: /control WS endpoint (reconnect with long-lived key) ---
@@ -274,7 +274,7 @@ async fn handle_control(socket: WebSocket, state: Arc<AppState>) {
     let sink = Arc::new(tokio::sync::Mutex::new(WsSinkAdapter(sink)));
     let stream = WsStreamAdapter(stream);
     let hostname = crate::control::gethostname();
-    control::run_control(sink, stream, &state.manager, &hostname).await;
+    control::run_control(sink, stream, &state.manager, &hostname, state.max_shells, &state.allowed_hosts).await;
 }
 
 // --- Adapters: axum WS ↔ tungstenite Message ---

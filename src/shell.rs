@@ -512,4 +512,60 @@ mod tests {
         };
         assert!(req.host.is_none() && req.agent.is_none() && req.cmd.is_none());
     }
+
+    #[tokio::test]
+    async fn get_reader_writer_returns_both() {
+        let mgr = ShellManager::new();
+        let id = mgr.spawn(SpawnRequest {
+            name: Some("rw-test".into()),
+            shell: None, cwd: None, host: None, agent: None,
+            cmd: Some("sleep 60".into()),
+        }).await.unwrap();
+        let result = mgr.get_reader_writer(&id).await;
+        assert!(result.is_ok(), "get_reader_writer should succeed");
+        // Clean up
+        let _ = mgr.kill(&id).await;
+    }
+
+    #[tokio::test]
+    async fn shell_id_by_session_finds_shell() {
+        let mgr = ShellManager::new();
+        let id = mgr.spawn(SpawnRequest {
+            name: Some("session-lookup".into()),
+            shell: None, cwd: None, host: None, agent: None,
+            cmd: Some("sleep 60".into()),
+        }).await.unwrap();
+        mgr.set_session_id(&id, "my-session-123").await;
+        let found = mgr.shell_id_by_session("my-session-123").await;
+        assert_eq!(found, Some(id.clone()));
+        let _ = mgr.kill(&id).await;
+    }
+
+    #[tokio::test]
+    async fn shell_id_by_session_returns_none_for_unknown() {
+        let mgr = ShellManager::new();
+        let found = mgr.shell_id_by_session("nonexistent-session").await;
+        assert_eq!(found, None);
+    }
+
+    #[tokio::test]
+    async fn on_death_receives_notification() {
+        let mgr = ShellManager::new();
+        let mut death_rx = mgr.on_death();
+        // Use sleep so we have time to set session_id before it exits
+        let id = mgr.spawn(SpawnRequest {
+            name: Some("death-test".into()),
+            shell: None, cwd: None, host: None, agent: None,
+            cmd: Some("sleep 0.2".into()),
+        }).await.unwrap();
+        mgr.set_session_id(&id, "death-session").await;
+        // Wait for the short-lived command to exit and the death watcher to fire
+        let death = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            death_rx.recv(),
+        ).await.expect("timed out waiting for death notification")
+         .expect("death channel closed");
+        assert_eq!(death.shell_id, id);
+        assert_eq!(death.session_id, Some("death-session".into()));
+    }
 }

@@ -74,6 +74,8 @@ pub async fn connect_to_hermytt(
     hermytt_url: &str,
     auth_key: &str,
     manager: ShellManager,
+    max_shells: usize,
+    allowed_hosts: Vec<String>,
 ) {
     let ws_url = hermytt_url
         .replace("http://", "ws://")
@@ -105,7 +107,7 @@ pub async fn connect_to_hermytt(
                     }
 
                     // Run control loop
-                    run_control(sink, stream, &manager, &hostname).await;
+                    run_control(sink, stream, &manager, &hostname, max_shells, &allowed_hosts).await;
                     tracing::warn!("control: connection lost, reconnecting...");
                 }
                 Err(e) => {
@@ -126,6 +128,8 @@ pub async fn run_control<S, K>(
     mut stream: K,
     manager: &ShellManager,
     hostname: &str,
+    max_shells: usize,
+    allowed_hosts: &[String],
 ) where
     S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin + Send + 'static,
     K: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
@@ -183,14 +187,14 @@ pub async fn run_control<S, K>(
                 tracing::info!("control: authenticated");
             }
             ControlMsg::Spawn { req_id, shell, cwd, session_id, name } => {
-                let result = manager.spawn(SpawnRequest {
+                let result = manager.spawn_with_limits(SpawnRequest {
                     name,
                     shell,
                     cwd,
                     host: None,
                     agent: None,
                     cmd: None,
-                }).await;
+                }, max_shells, allowed_hosts).await;
 
                 match result {
                     Ok(shell_id) => {
@@ -378,19 +382,21 @@ fn local_ip() -> Option<String> {
         })
 }
 
+fn random_hex(bytes: usize) -> String {
+    let mut buf = vec![0u8; bytes];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let _ = f.read_exact(&mut buf);
+    }
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn gen_key() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let pid = std::process::id();
-    format!("{t:x}{pid:x}")
+    random_hex(16)
 }
 
 pub fn gen_long_lived_key() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let pid = std::process::id();
-    // Longer key for long-lived use
-    format!("sk-{t:x}{pid:x}{t:x}")
+    format!("sk-{}", random_hex(32))
 }
 
 // --- Key persistence ---
@@ -558,5 +564,122 @@ mod tests {
         let (ip, port) = parse_listen_addr("10.10.0.4");
         assert_eq!(ip, "10.10.0.4");
         assert_eq!(port, 7778);
+    }
+
+    #[test]
+    fn control_msg_data_roundtrip() {
+        let msg = ControlMsg::Data {
+            session_id: "sess-42".into(),
+            data: base64_encode(b"hello from pty"),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"data\""));
+        let parsed: ControlMsg = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ControlMsg::Data { session_id, data } => {
+                assert_eq!(session_id, "sess-42");
+                assert_eq!(base64_decode(&data).unwrap(), b"hello from pty");
+            }
+            _ => panic!("expected Data variant"),
+        }
+    }
+
+    #[test]
+    fn control_msg_input_roundtrip() {
+        let msg = ControlMsg::Input {
+            session_id: "sess-7".into(),
+            data: base64_encode(b"ls -la\n"),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"input\""));
+        let parsed: ControlMsg = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ControlMsg::Input { session_id, data } => {
+                assert_eq!(session_id, "sess-7");
+                assert_eq!(base64_decode(&data).unwrap(), b"ls -la\n");
+            }
+            _ => panic!("expected Input variant"),
+        }
+    }
+
+    #[test]
+    fn control_msg_shell_died_with_session_id() {
+        let msg = ControlMsg::ShellDied {
+            shell_id: "sh-1".into(),
+            session_id: Some("sess-1".into()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"shell_died\""));
+        assert!(json.contains("\"session_id\":\"sess-1\""));
+        let parsed: ControlMsg = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ControlMsg::ShellDied { shell_id, session_id } => {
+                assert_eq!(shell_id, "sh-1");
+                assert_eq!(session_id, Some("sess-1".into()));
+            }
+            _ => panic!("expected ShellDied variant"),
+        }
+    }
+
+    #[test]
+    fn control_msg_shell_died_without_session_id() {
+        let msg = ControlMsg::ShellDied {
+            shell_id: "sh-2".into(),
+            session_id: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("session_id"));
+    }
+
+    #[test]
+    fn control_msg_resize_roundtrip() {
+        let msg = ControlMsg::Resize {
+            shell_id: "sh-3".into(),
+            cols: 120,
+            rows: 40,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ControlMsg = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ControlMsg::Resize { shell_id, cols, rows } => {
+                assert_eq!(shell_id, "sh-3");
+                assert_eq!(cols, 120);
+                assert_eq!(rows, 40);
+            }
+            _ => panic!("expected Resize variant"),
+        }
+    }
+
+    #[test]
+    fn base64_roundtrip_binary_non_utf8() {
+        let data: Vec<u8> = (0..=255).collect();
+        let encoded = base64_encode(&data);
+        let decoded = base64_decode(&encoded).unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn base64_roundtrip_empty() {
+        let encoded = base64_encode(b"");
+        let decoded = base64_decode(&encoded).unwrap();
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn pair_token_generate_produces_decodable_base64() {
+        let (_token, encoded) = PairToken::generate("127.0.0.1:7778");
+        // Must be valid base64 that decodes to valid JSON
+        let bytes = base64_decode(&encoded).unwrap();
+        let decoded: PairToken = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.port, 7778);
+        assert!(!decoded.key.is_empty());
+        assert!(decoded.expires > 0);
+    }
+
+    #[test]
+    fn gethostname_returns_non_empty() {
+        let hostname = gethostname();
+        assert!(!hostname.is_empty());
+        assert_ne!(hostname, "unknown");
     }
 }

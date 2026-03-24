@@ -31,11 +31,18 @@ async fn main() {
 
             // Mode 1: connect control WS to Hermytt
             let has_mode1 = !cfg.daemon.hermytt_url.contains("localhost") || !cfg.daemon.hermytt_key.is_empty();
+            let allowed_hosts: Vec<String> = cfg.shells.iter()
+                .filter_map(|s| s.host.clone())
+                .collect();
+            let max_shells = cfg.daemon.max_shells.unwrap_or(64);
+
             if has_mode1 {
                 control::connect_to_hermytt(
                     &cfg.daemon.hermytt_url,
                     &cfg.daemon.hermytt_key,
                     manager.clone(),
+                    max_shells,
+                    allowed_hosts,
                 ).await;
             }
 
