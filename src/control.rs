@@ -205,7 +205,10 @@ pub async fn run_control<S, K>(
                             manager.set_session_id(&shell_id, &s).await;
 
                             // Start PTY stdout → Data message task
-                            if let Ok(reader) = manager.get_reader(&shell_id).await {
+                            match manager.get_reader(&shell_id).await {
+                                Err(e) => tracing::error!(%shell_id, "get_reader failed: {e}"),
+                                Ok(reader) => {
+                                tracing::info!(%shell_id, session_id = %s, "starting Mode 2 data relay");
                                 let data_sink = sink.clone();
                                 let data_sid = s.clone();
                                 tokio::spawn(async move {
@@ -234,7 +237,7 @@ pub async fn run_control<S, K>(
                                         }
                                     }
                                 });
-                            }
+                            }}
                             s
                         };
                         let resp = ControlMsg::SpawnOk {
