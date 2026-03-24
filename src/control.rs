@@ -217,11 +217,11 @@ pub async fn run_control<S, K>(
                                         reader = r_back;
                                         match result {
                                             Ok(ref data) if data.is_empty() => {
-                                                tracing::debug!(session_id = %data_sid, "pty EOF");
+                                                tracing::info!(session_id = %data_sid, "pty EOF");
                                                 break;
                                             }
                                             Ok(data) => {
-                                                tracing::debug!(session_id = %data_sid, bytes = data.len(), "sending data");
+                                                tracing::info!(session_id = %data_sid, bytes = data.len(), "sending data");
                                                 let msg = ControlMsg::Data {
                                                     session_id: data_sid.clone(),
                                                     data: base64_encode(&data),
@@ -232,7 +232,7 @@ pub async fn run_control<S, K>(
                                                 }
                                             }
                                             Err(e) => {
-                                                tracing::warn!(session_id = %data_sid, "pty read error: {e}");
+                                                tracing::error!(session_id = %data_sid, "pty read error: {e}");
                                                 break;
                                             }
                                         }
