@@ -1,9 +1,7 @@
 mod cli;
 
-use std::sync::Arc;
-
 use cli::Command;
-use shytti::{api, bridge, config, control, shell};
+use shytti::{api, config, control, shell};
 
 #[tokio::main]
 async fn main() {
@@ -21,47 +19,34 @@ async fn main() {
             tracing::info!("shytti starting");
 
             let manager = shell::ShellManager::new();
-            let bridge = Arc::new(bridge::HermyttBridge::new(
-                &cfg.daemon.hermytt_url,
-                &cfg.daemon.hermytt_key,
-            ));
 
             for shell_cfg in &cfg.shells {
                 if shell_cfg.autostart {
                     match manager.spawn(shell_cfg.into()).await {
-                        Ok(id) => {
-                            tracing::info!(name = %shell_cfg.name, %id, "auto-spawned");
-                            if let Err(e) = bridge.attach(&id, &manager).await {
-                                tracing::error!(%id, "bridge failed: {e}");
-                            }
-                        }
+                        Ok(id) => tracing::info!(name = %shell_cfg.name, %id, "auto-spawned"),
                         Err(e) => tracing::error!(name = %shell_cfg.name, "spawn failed: {e}"),
                     }
                 }
             }
 
-            // Mode 1: connect control WS to Hermytt (only if hermytt_url is configured and not default)
-            if !cfg.daemon.hermytt_url.contains("localhost") || !cfg.daemon.hermytt_key.is_empty() {
+            // Mode 1: connect control WS to Hermytt
+            let has_mode1 = !cfg.daemon.hermytt_url.contains("localhost") || !cfg.daemon.hermytt_key.is_empty();
+            if has_mode1 {
                 control::connect_to_hermytt(
                     &cfg.daemon.hermytt_url,
                     &cfg.daemon.hermytt_key,
                     manager.clone(),
-                    bridge.clone(),
                 ).await;
             }
 
-            let (app, state) = api::router_with_state(&cfg, manager, bridge);
+            let (app, state) = api::router_with_state(&cfg, manager);
             let key_path = control::key_path(&cfg.daemon.listen);
             *state.key_path.lock().await = Some(key_path.clone());
 
-            let has_mode1 = !cfg.daemon.hermytt_url.contains("localhost") || !cfg.daemon.hermytt_key.is_empty();
-
             if let Some(key) = control::load_key(&key_path) {
-                // Already paired — accept reconnects
                 tracing::info!("loaded pairing key, accepting Mode 2 reconnects");
                 *state.long_lived_key.lock().await = Some(key);
             } else if !has_mode1 {
-                // No hermytt config, no stored key → enter pairing mode
                 let (token, encoded) = control::PairToken::generate(&cfg.daemon.listen);
                 tracing::info!("no hermytt config and no pairing key — entering pair mode");
                 eprintln!();
@@ -97,21 +82,14 @@ async fn main() {
             eprintln!("Listening on {}:{} ...", token.ip, token.port);
 
             let manager = shell::ShellManager::new();
-            let bridge = Arc::new(bridge::HermyttBridge::new(
-                &cfg.daemon.hermytt_url,
-                &cfg.daemon.hermytt_key,
-            ));
-
             let pair_state = control::PairState {
                 pair_key: token.key.clone(),
                 long_lived_key: None,
                 used: false,
             };
 
-            let (app, state) = api::router_with_state(&cfg, manager, bridge);
+            let (app, state) = api::router_with_state(&cfg, manager);
             *state.pair_state.lock().await = Some(pair_state);
-
-            // Store config path so the pair handler can save the key
             let key_path = control::key_path(&cfg.daemon.listen);
             *state.key_path.lock().await = Some(key_path);
 

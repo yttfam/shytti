@@ -1,5 +1,4 @@
 use shytti::api;
-use shytti::bridge::HermyttBridge;
 use shytti::config::Config;
 use shytti::shell::ShellManager;
 
@@ -23,10 +22,9 @@ fn test_config() -> Config {
 
 async fn start_server() -> (String, ShellManager) {
     let manager = ShellManager::new();
-    let bridge = std::sync::Arc::new(HermyttBridge::new("http://127.0.0.1:1", "test"));
     let cfg = test_config();
 
-    let app = api::router(&cfg, manager.clone(), bridge);
+    let app = api::router(&cfg, manager.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let base = format!("http://{addr}");

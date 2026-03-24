@@ -7,9 +7,17 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::bridge::HermyttBridge;
 use crate::error::Error;
 use crate::shell::{ShellManager, SpawnRequest};
+
+pub fn gethostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".into())
+}
 
 // --- Wire protocol types ---
 
@@ -66,14 +74,13 @@ pub async fn connect_to_hermytt(
     hermytt_url: &str,
     auth_key: &str,
     manager: ShellManager,
-    bridge: Arc<HermyttBridge>,
 ) {
     let ws_url = hermytt_url
         .replace("http://", "ws://")
         .replace("https://", "wss://");
     let url = format!("{ws_url}/control");
     let key = auth_key.to_string();
-    let hostname = super::bridge::gethostname();
+    let hostname = gethostname();
     let name = format!("shytti-{hostname}");
 
     tokio::spawn(async move {
@@ -98,7 +105,7 @@ pub async fn connect_to_hermytt(
                     }
 
                     // Run control loop
-                    run_control(sink, stream, &manager, &bridge, &hostname).await;
+                    run_control(sink, stream, &manager, &hostname).await;
                     tracing::warn!("control: connection lost, reconnecting...");
                 }
                 Err(e) => {
@@ -118,7 +125,6 @@ pub async fn run_control<S, K>(
     sink: Arc<Mutex<S>>,
     mut stream: K,
     manager: &ShellManager,
-    bridge: &HermyttBridge,
     hostname: &str,
 ) where
     S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin + Send + 'static,
@@ -188,39 +194,22 @@ pub async fn run_control<S, K>(
 
                 match result {
                     Ok(shell_id) => {
-                        let sid = if bridge.is_configured() {
-                            // Mode 1: use data pipe
-                            let s = if let Some(sid) = session_id {
-                                sid
-                            } else {
-                                match bridge.attach(&shell_id, manager).await {
-                                    Ok(sid) => sid,
-                                    Err(e) => {
-                                        tracing::warn!(%shell_id, "bridge attach: {e}");
-                                        shell_id.clone()
-                                    }
-                                }
-                            };
-                            manager.set_session_id(&shell_id, &s).await;
-                            s
-                        } else {
-                            // Mode 2: multiplex PTY data over control WS
-                            let s = session_id.unwrap_or_else(|| shell_id.clone());
-                            manager.set_session_id(&shell_id, &s).await;
+                        let sid = session_id.unwrap_or_else(|| shell_id.clone());
+                        manager.set_session_id(&shell_id, &sid).await;
 
-                            // Take writer for this session (used by Input handler)
-                            match manager.get_writer(&shell_id).await {
-                                Ok(w) => { writers.lock().await.insert(s.clone(), w); }
-                                Err(e) => tracing::error!(%shell_id, "get_writer failed: {e}"),
-                            }
+                        // Take writer (used by Input handler)
+                        match manager.get_writer(&shell_id).await {
+                            Ok(w) => { writers.lock().await.insert(sid.clone(), w); }
+                            Err(e) => tracing::error!(%shell_id, "get_writer failed: {e}"),
+                        }
 
-                            // Start PTY stdout → Data message task
-                            match manager.get_reader(&shell_id).await {
-                                Err(e) => tracing::error!(%shell_id, "get_reader failed: {e}"),
-                                Ok(reader) => {
-                                tracing::info!(%shell_id, session_id = %s, "starting Mode 2 data relay");
+                        // Start PTY stdout → Data messages over control WS
+                        match manager.get_reader(&shell_id).await {
+                            Err(e) => tracing::error!(%shell_id, "get_reader failed: {e}"),
+                            Ok(reader) => {
+                                tracing::info!(%shell_id, session_id = %sid, "data relay started");
                                 let data_sink = sink.clone();
-                                let data_sid = s.clone();
+                                let data_sid = sid.clone();
                                 tokio::spawn(async move {
                                     let mut reader = reader;
                                     loop {
@@ -247,9 +236,8 @@ pub async fn run_control<S, K>(
                                         }
                                     }
                                 });
-                            }}
-                            s
-                        };
+                            }
+                        }
                         let resp = ControlMsg::SpawnOk {
                             req_id,
                             shell_id,
@@ -267,11 +255,9 @@ pub async fn run_control<S, K>(
                 }
             }
             ControlMsg::Kill { shell_id } => {
+                writers.lock().await.remove(&shell_id);
                 match manager.kill(&shell_id).await {
                     Ok(_) => {
-                        if let Err(e) = bridge.detach(&shell_id).await {
-                            tracing::warn!(%shell_id, "detach failed: {e}");
-                        }
                         let resp = ControlMsg::KillOk { shell_id };
                         let _ = sink.lock().await.send(send_msg(&resp)).await;
                     }

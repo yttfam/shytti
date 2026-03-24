@@ -1,7 +1,6 @@
 //! Security tests — adversarial inputs, auth enforcement, resource limits.
 
 use shytti::api;
-use shytti::bridge::HermyttBridge;
 use shytti::config::{Config, DaemonConfig, DefaultsConfig, ShellConfig};
 use shytti::shell::ShellManager;
 
@@ -45,9 +44,8 @@ fn config_no_auth() -> Config {
 
 async fn start_with_config(cfg: Config) -> String {
     let manager = ShellManager::new();
-    let bridge = std::sync::Arc::new(HermyttBridge::new("http://127.0.0.1:1", "test"));
 
-    let app = api::router(&cfg, manager, bridge);
+    let app = api::router(&cfg, manager);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
 

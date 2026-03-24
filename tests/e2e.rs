@@ -1,7 +1,6 @@
 //! End-to-end tests: start the full daemon, interact via raw HTTP.
 
 use shytti::api;
-use shytti::bridge::HermyttBridge;
 use shytti::config::{Config, DaemonConfig, DefaultsConfig};
 use shytti::shell::ShellManager;
 
@@ -24,10 +23,9 @@ fn test_config() -> Config {
 
 async fn start_daemon() -> String {
     let manager = ShellManager::new();
-    let bridge = std::sync::Arc::new(HermyttBridge::new("http://127.0.0.1:1", "test"));
     let cfg = test_config();
 
-    let app = api::router(&cfg, manager, bridge);
+    let app = api::router(&cfg, manager);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
 
