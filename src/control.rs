@@ -147,9 +147,15 @@ pub async fn run_control<S, K>(
                     "shells_active": count,
                 }),
             };
-            if hb_sink.lock().await.send(send_msg(&msg)).await.is_err() {
+            let mut sink = hb_sink.lock().await;
+            if sink.send(send_msg(&msg)).await.is_err() {
                 break;
             }
+            // WS-level ping to keep the connection alive through NAT/proxies/macOS
+            if sink.send(Message::Ping(vec![].into())).await.is_err() {
+                break;
+            }
+            drop(sink);
             tokio::time::sleep(Duration::from_secs(15)).await;
         }
     });
@@ -175,6 +181,11 @@ pub async fn run_control<S, K>(
 
     // Process incoming messages
     while let Some(Ok(msg)) = stream.next().await {
+        // Handle WS-level ping → pong (split streams can't auto-respond)
+        if let Message::Ping(data) = &msg {
+            let _ = sink.lock().await.send(Message::Pong(data.clone())).await;
+            continue;
+        }
         let Some(ctrl) = parse_msg(&msg) else {
             if let Message::Text(t) = &msg {
                 tracing::warn!("control: unparseable message: {}", t);
