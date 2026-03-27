@@ -93,14 +93,20 @@ pub struct ShellDeath {
 pub struct ShellManager {
     shells: Arc<Mutex<HashMap<String, ManagedShell>>>,
     death_tx: broadcast::Sender<ShellDeath>,
+    default_shell: String,
 }
 
 impl ShellManager {
     pub fn new() -> Self {
+        Self::with_default_shell("/bin/zsh".into())
+    }
+
+    pub fn with_default_shell(default_shell: String) -> Self {
         let (death_tx, _) = broadcast::channel(64);
         Self {
             shells: Arc::new(Mutex::new(HashMap::new())),
             death_tx,
+            default_shell,
         }
     }
 
@@ -215,7 +221,7 @@ impl ShellManager {
 
         let mut cmd = match &shell_type {
             ShellType::Local => {
-                CommandBuilder::new(req.shell.as_deref().unwrap_or("/bin/zsh"))
+                CommandBuilder::new(req.shell.as_deref().unwrap_or(&self.default_shell))
             }
             ShellType::Remote => {
                 let mut cmd = CommandBuilder::new("ssh");

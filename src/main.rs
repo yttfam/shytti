@@ -37,7 +37,7 @@ async fn main() {
 
             tracing::info!("shytti starting");
 
-            let manager = shell::ShellManager::new();
+            let manager = shell::ShellManager::with_default_shell(cfg.defaults.shell.clone());
 
             for shell_cfg in &cfg.shells {
                 if shell_cfg.autostart {
@@ -116,7 +116,7 @@ async fn main() {
             eprintln!("Paste this token in the Hermytt admin UI to pair.");
             eprintln!("Listening on {}:{} ...", token.ip, token.port);
 
-            let manager = shell::ShellManager::new();
+            let manager = shell::ShellManager::with_default_shell(cfg.defaults.shell.clone());
             let pair_state = control::PairState {
                 pair_key: token.key.clone(),
                 long_lived_key: None,
