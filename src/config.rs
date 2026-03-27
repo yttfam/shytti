@@ -16,11 +16,14 @@ pub struct Config {
     /// Hermytt bootstrap writes [hermytt] with url/token. We merge it into daemon config.
     #[serde(default)]
     pub hermytt: Option<HermyttSection>,
+    /// Hermytt bootstrap writes [shell] with default. We merge it into defaults.
+    #[serde(default)]
+    pub shell: Option<ShellSection>,
 }
 
 impl Config {
     pub fn new(daemon: DaemonConfig, defaults: DefaultsConfig, shells: Vec<ShellConfig>) -> Self {
-        Self { daemon, defaults, shells, hermytt: None }
+        Self { daemon, defaults, shells, hermytt: None, shell: None }
     }
 }
 
@@ -28,6 +31,11 @@ impl Config {
 pub struct HermyttSection {
     url: Option<String>,
     token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ShellSection {
+    default: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,6 +106,12 @@ impl Config {
                     config.daemon.hermytt_key = token;
                 }
             }
+            // Merge [shell] section into defaults (bootstrap compat)
+            if let Some(s) = config.shell.take() {
+                if let Some(default) = s.default {
+                    config.defaults.shell = default;
+                }
+            }
             tracing::info!(path = %path.display(), "loaded config");
             Ok(config)
         } else {
@@ -107,6 +121,7 @@ impl Config {
                 defaults: DefaultsConfig::default(),
                 shells: vec![],
                 hermytt: None,
+                shell: None,
             })
         }
     }
@@ -269,6 +284,40 @@ token = "mytoken"
         assert_eq!(cfg.daemon.listen, "0.0.0.0:7778");
         assert_eq!(cfg.daemon.hermytt_url, "http://10.10.0.3:7777");
         assert_eq!(cfg.daemon.hermytt_key, "mytoken");
+    }
+
+    #[test]
+    fn shell_section_overrides_default_shell() {
+        let p = write_tmp("shell_section", r#"
+[hermytt]
+url = "http://10.10.0.3:7777"
+token = "abc"
+
+[shell]
+default = "/bin/fish"
+"#);
+        let cfg = Config::load(Some(p.clone())).unwrap();
+        std::fs::remove_file(&p).ok();
+
+        assert_eq!(cfg.defaults.shell, "/bin/fish");
+    }
+
+    #[test]
+    fn shell_section_bootstrap_compat() {
+        // Exact format Hermytt bootstrap writes
+        let p = write_tmp("bootstrap_real", r#"
+[hermytt]
+url = "http://10.10.0.3:7777"
+token = "d83c76d70e0847cf9bc6db0720e8faed"
+
+[shell]
+default = "/bin/zsh"
+"#);
+        let cfg = Config::load(Some(p.clone())).unwrap();
+        std::fs::remove_file(&p).ok();
+
+        assert_eq!(cfg.defaults.shell, "/bin/zsh");
+        assert_eq!(cfg.daemon.hermytt_url, "http://10.10.0.3:7777");
     }
 
     #[test]
