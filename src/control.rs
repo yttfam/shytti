@@ -50,11 +50,21 @@ pub enum ControlMsg {
     Kill { shell_id: String },
     Resize { shell_id: String, cols: u16, rows: u16 },
 
+    // Session recovery
+    ListShells,
+    ShellsList { shells: Vec<ShellListEntry> },
+
     // Data plane (Mode 2 — multiplexed over control WS)
     // Shytti → Hermytt: PTY output
     Data { session_id: String, data: String },
     // Hermytt → Shytti: stdin
     Input { session_id: String, data: String },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ShellListEntry {
+    pub shell_id: String,
+    pub session_id: String,
 }
 
 fn send_msg(msg: &ControlMsg) -> Message {
@@ -196,6 +206,24 @@ pub async fn run_control<S, K>(
         match ctrl {
             ControlMsg::AuthOk { .. } => {
                 tracing::info!("control: authenticated");
+            }
+            ControlMsg::ListShells => {
+                let shells_info = manager.list().await;
+                let entries: Vec<ShellListEntry> = {
+                    let mut out = Vec::new();
+                    for s in &shells_info {
+                        let sid = manager.get_session_id(&s.id).await
+                            .unwrap_or_else(|| s.id.clone());
+                        out.push(ShellListEntry {
+                            shell_id: s.id.clone(),
+                            session_id: sid,
+                        });
+                    }
+                    out
+                };
+                tracing::info!(count = entries.len(), "control: responding to list_shells");
+                let resp = ControlMsg::ShellsList { shells: entries };
+                let _ = sink.lock().await.send(send_msg(&resp)).await;
             }
             ControlMsg::Spawn { req_id, shell, cwd, session_id, name } => {
                 let result = manager.spawn_with_limits(SpawnRequest {

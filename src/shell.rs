@@ -121,6 +121,12 @@ impl ShellManager {
         }
     }
 
+    /// Get session_id for a shell
+    pub async fn get_session_id(&self, shell_id: &str) -> Option<String> {
+        self.shells.lock().await.get(shell_id)
+            .and_then(|s| s.session_id.clone())
+    }
+
     /// Find shell_id by session_id
     pub async fn shell_id_by_session(&self, session_id: &str) -> Option<String> {
         self.shells.lock().await.values()
