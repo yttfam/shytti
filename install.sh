@@ -18,12 +18,13 @@ case "$ARCH" in
 esac
 
 URL="https://github.com/yttfam/shytti/releases/latest/download/shytti-${OS}-${ARCH}"
+VERSION=$(curl -sI https://github.com/yttfam/shytti/releases/latest | grep -i ^location: | sed 's|.*/tag/||;s/[[:space:]]*$//')
 
 # --- Detect run user (for macOS LaunchDaemon) ---
 RUN_USER="${SUDO_USER:-$(whoami)}"
 
 # --- Install ---
-echo "=> installing shytti to $INSTALL_DIR"
+echo "=> installing shytti $VERSION to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 
 # Stop existing service
