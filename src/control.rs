@@ -209,18 +209,62 @@ pub async fn run_control<S, K>(
             }
             ControlMsg::ListShells => {
                 let shells_info = manager.list().await;
-                let entries: Vec<ShellListEntry> = {
-                    let mut out = Vec::new();
-                    for s in &shells_info {
-                        let sid = manager.get_session_id(&s.id).await
-                            .unwrap_or_else(|| s.id.clone());
-                        out.push(ShellListEntry {
-                            shell_id: s.id.clone(),
-                            session_id: sid,
-                        });
+                let mut entries = Vec::new();
+                for s in &shells_info {
+                    let sid = manager.get_session_id(&s.id).await
+                        .unwrap_or_else(|| s.id.clone());
+
+                    // Re-attach data relay if not already wired
+                    if !writers.lock().await.contains_key(&sid) {
+                        if let Ok((reader, writer)) = manager.get_reader_writer(&s.id).await {
+                            writers.lock().await.insert(sid.clone(), writer);
+                            let data_sink = sink.clone();
+                            let data_sid = sid.clone();
+                            let data_shell_id = s.id.clone();
+                            tokio::spawn(async move {
+                                let mut reader = reader;
+                                loop {
+                                    let mut r = reader;
+                                    let (r_back, result): (Box<dyn std::io::Read + Send>, std::io::Result<Vec<u8>>) =
+                                        tokio::task::spawn_blocking(move || {
+                                            let mut buf = [0u8; 4096];
+                                            let n = r.read(&mut buf);
+                                            (r, n.map(|n| buf[..n].to_vec()))
+                                        }).await.unwrap_or_else(|_| panic!("pty read panicked"));
+                                    reader = r_back;
+                                    match result {
+                                        Ok(ref data) if data.is_empty() => {
+                                            tracing::info!(session_id = %data_sid, "pty EOF (recovered)");
+                                            break;
+                                        }
+                                        Ok(data) => {
+                                            let msg = ControlMsg::Data {
+                                                session_id: data_sid.clone(),
+                                                data: base64_encode(&data),
+                                            };
+                                            if data_sink.lock().await.send(send_msg(&msg)).await.is_err() {
+                                                tracing::warn!(session_id = %data_sid, "data send failed (recovered)");
+                                                break;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(session_id = %data_sid, "pty read error (recovered): {e}");
+                                            break;
+                                        }
+                                    }
+                                }
+                            });
+                            tracing::info!(shell_id = %s.id, session_id = %sid, "re-attached data relay");
+                        } else {
+                            tracing::warn!(shell_id = %s.id, "failed to re-attach data relay");
+                        }
                     }
-                    out
-                };
+
+                    entries.push(ShellListEntry {
+                        shell_id: s.id.clone(),
+                        session_id: sid,
+                    });
+                }
                 tracing::info!(count = entries.len(), "control: responding to list_shells");
                 let resp = ControlMsg::ShellsList { shells: entries };
                 let _ = sink.lock().await.send(send_msg(&resp)).await;
