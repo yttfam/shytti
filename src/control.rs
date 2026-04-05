@@ -217,11 +217,25 @@ pub async fn run_control<S, K>(
 
                     // Re-attach data relay if not already wired
                     if !writers.lock().unwrap().contains_key(&sid) {
+                        let scrollback = manager.get_scrollback(&s.id).await;
                         if let Ok((reader, writer)) = manager.get_reader_writer(&s.id).await {
                             writers.lock().unwrap().insert(sid.clone(), writer);
+
+                            // Replay scrollback buffer before starting live stream
+                            if let Some(ref sb) = scrollback {
+                                let snapshot = sb.snapshot();
+                                if !snapshot.is_empty() {
+                                    let msg = ControlMsg::Data {
+                                        session_id: sid.clone(),
+                                        data: base64_encode(&snapshot),
+                                    };
+                                    let _ = sink.lock().await.send(send_msg(&msg)).await;
+                                    tracing::info!(shell_id = %s.id, bytes = snapshot.len(), "replayed scrollback");
+                                }
+                            }
+
                             let data_sink = sink.clone();
                             let data_sid = sid.clone();
-                            let data_shell_id = s.id.clone();
                             tokio::spawn(async move {
                                 let mut reader = reader;
                                 loop {
@@ -239,6 +253,7 @@ pub async fn run_control<S, K>(
                                             break;
                                         }
                                         Ok(data) => {
+                                            if let Some(ref sb) = scrollback { sb.push(&data); }
                                             let msg = ControlMsg::Data {
                                                 session_id: data_sid.clone(),
                                                 data: base64_encode(&data),
@@ -256,7 +271,6 @@ pub async fn run_control<S, K>(
                                 }
                             });
                             // Trigger SIGWINCH so the shell redraws its prompt.
-                            // Crytter will follow up with the real viewport size.
                             let _ = manager.resize(&s.id, 24, 80).await;
                             tracing::info!(shell_id = %s.id, session_id = %sid, "re-attached data relay");
                         } else {
@@ -288,6 +302,7 @@ pub async fn run_control<S, K>(
                         let sid = session_id.unwrap_or_else(|| shell_id.clone());
                         manager.set_session_id(&shell_id, &sid).await;
 
+                        let scrollback = manager.get_scrollback(&shell_id).await;
                         match manager.get_reader_writer(&shell_id).await {
                             Err(e) => tracing::error!(%shell_id, "get_reader_writer failed: {e}"),
                             Ok((reader, writer)) => {
@@ -312,7 +327,7 @@ pub async fn run_control<S, K>(
                                                 break;
                                             }
                                             Ok(data) => {
-                                                tracing::info!(session_id = %data_sid, bytes = data.len(), "sending data");
+                                                if let Some(ref sb) = scrollback { sb.push(&data); }
                                                 let msg = ControlMsg::Data {
                                                     session_id: data_sid.clone(),
                                                     data: base64_encode(&data),

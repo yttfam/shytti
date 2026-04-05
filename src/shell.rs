@@ -76,6 +76,33 @@ pub struct SpawnRequest {
     pub cmd: Option<String>,
 }
 
+/// Ring buffer for PTY output replay on reconnect.
+const SCROLLBACK_BYTES: usize = 64 * 1024; // 64 KB
+
+#[derive(Clone)]
+pub struct ScrollbackBuf {
+    buf: Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+impl ScrollbackBuf {
+    fn new() -> Self {
+        Self { buf: Arc::new(std::sync::Mutex::new(Vec::with_capacity(4096))) }
+    }
+
+    pub fn push(&self, data: &[u8]) {
+        let mut buf = self.buf.lock().unwrap();
+        buf.extend_from_slice(data);
+        if buf.len() > SCROLLBACK_BYTES {
+            let drain = buf.len() - SCROLLBACK_BYTES;
+            buf.drain(..drain);
+        }
+    }
+
+    pub fn snapshot(&self) -> Vec<u8> {
+        self.buf.lock().unwrap().clone()
+    }
+}
+
 struct ManagedShell {
     info: ShellInfo,
     master: Box<dyn MasterPty + Send>,
@@ -83,6 +110,7 @@ struct ManagedShell {
     /// Stored after first take — shared via Arc so reconnects can reuse it.
     /// Uses std::sync::Mutex since PTY writes are blocking.
     writer: Option<Arc<std::sync::Mutex<Box<dyn Write + Send>>>>,
+    scrollback: ScrollbackBuf,
 }
 
 /// Shell death event
@@ -122,6 +150,11 @@ impl ShellManager {
         if let Some(shell) = self.shells.lock().await.get_mut(shell_id) {
             shell.session_id = Some(session_id.to_string());
         }
+    }
+
+    /// Get the scrollback buffer for a shell
+    pub async fn get_scrollback(&self, shell_id: &str) -> Option<ScrollbackBuf> {
+        self.shells.lock().await.get(shell_id).map(|s| s.scrollback.clone())
     }
 
     /// Get session_id for a shell
@@ -287,6 +320,7 @@ impl ShellManager {
             master: pair.master,
             session_id: None,
             writer: None,
+            scrollback: ScrollbackBuf::new(),
         };
 
         self.shells.lock().await.insert(id.clone(), managed);
